@@ -3,6 +3,11 @@
     downsize clip.mp4                     # fits it under Discord's 10 MB
     downsize clip.mp4 --for whatsapp
     downsize clip.mp4 --size 25MB -o small.mp4
+    downsize photo.jpg --size 500KB       # images, GIFs and audio too
+    downsize voice.wav --for email
+
+The kind of file decides how it is shrunk -- see `kinds.py` -- but not what
+is promised about the result.
 
 Two exit codes, and the second one is the promise:
 
@@ -22,8 +27,11 @@ import sys
 from typing import Optional, Sequence
 
 from . import __version__
+from . import audio, gif, image
 from .budget import AlreadyFits, CannotFit, PRESETS, parse_size, plan
 from .encode import DEFAULT_ATTEMPTS, Attempt, DidNotFit, EncodeFailed, encode
+from .kinds import AUDIO, GIF, IMAGE, VIDEO, kind_of
+from .place import AlreadyFits as Fits, Shrunk, TooBig
 from .probe import FfmpegMissing, Unreadable, probe
 from .quality import measure
 
@@ -40,6 +48,8 @@ def _make_output_printable() -> None:
 
 
 def _mb(size: int) -> str:
+    if size < 1e6:
+        return "%.1f KB" % (size / 1e3)
     return "%.2f MB" % (size / 1e6)
 
 
@@ -56,11 +66,13 @@ def _default_output(path: str) -> str:
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="downsize",
-        description="downsize+: fits a video under an upload limit, and "
-                    "never hands you a file that is over it.")
-    p.add_argument("input", help="the video to shrink")
+        description="downsize+: fits a video, GIF, image or recording under "
+                    "an upload limit, and never hands you a file that is "
+                    "over it.")
+    p.add_argument("input", help="the file to shrink")
     p.add_argument("-o", "--output",
-                   help="where to write it (default: NAME.downsized.mp4)")
+                   help="where to write it (default: NAME.downsized.EXT); "
+                        "for audio the extension picks the codec")
     target = p.add_mutually_exclusive_group()
     target.add_argument("--for", dest="preset", choices=sorted(PRESETS),
                         help="a known upload limit (default: discord)")
@@ -70,6 +82,9 @@ def _parser() -> argparse.ArgumentParser:
                         % DEFAULT_ATTEMPTS)
     p.add_argument("--overwrite", action="store_true",
                    help="replace the output file if it exists")
+    p.add_argument("--image-format", choices=sorted(image.FORMATS),
+                   help="for images: force JPEG or WebP (default: JPEG stays "
+                        "JPEG, everything else becomes WebP)")
     p.add_argument("--no-quality", action="store_true",
                    help="skip the SSIM measurement (it decodes both files)")
     p.add_argument("--json", action="store_true",
@@ -95,9 +110,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         limit, note = PRESETS[name]
         limit_label = "%s (%s)" % (name, note)
 
+    if args.attempts < 1:
+        print("downsize: --attempts must be at least 1", file=sys.stderr)
+        return NOTHING_WRITTEN
+
     report = {"input": args.input, "limit_bytes": limit,
               "limit": limit_label, "written": None}
     say = (lambda *a: None) if args.json else print
+
+    try:
+        kind = kind_of(args.input, args.output)
+    except (FileNotFoundError, Unreadable, FfmpegMissing) as error:
+        print("downsize: %s" % error, file=sys.stderr)
+        return NOTHING_WRITTEN
+    report["kind"] = kind
+    if kind != VIDEO:
+        return _other(kind, args, limit, limit_label, report, say)
 
     try:
         media = probe(args.input)
@@ -184,6 +212,69 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.json:
         print(json.dumps(report, indent=1))
     return OK
+
+
+def _other(kind, args, limit, limit_label, report, say) -> int:
+    """Images, GIFs and audio: one search each, one shape of answer."""
+    try:
+        if kind == IMAGE:
+            size = os.path.getsize(args.input)
+            say("%s  %s  image" % (os.path.basename(args.input), _mb(size)))
+            say("target    %s, %s (%s bytes)" % (limit_label, _mb(limit),
+                                                 format(limit, ",")))
+            result = image.shrink(args.input, limit, args.output,
+                                  args.overwrite, args.image_format)
+        elif kind == GIF:
+            media = probe(args.input)
+            say("%s  %s  GIF %dx%d  %gfps  %s" % (
+                os.path.basename(media.path), _mb(media.size), media.width,
+                media.height, media.fps, _clock(media.duration)))
+            say("target    %s, %s (%s bytes)" % (limit_label, _mb(limit),
+                                                 format(limit, ",")))
+            result = gif.shrink(media, limit, args.output, args.overwrite)
+        else:
+            sound = audio.probe_audio(args.input)
+            say("%s  %s  audio %s  %s  %s" % (
+                os.path.basename(sound.path), _mb(sound.size), sound.codec,
+                "mono" if sound.channels == 1 else "stereo",
+                _clock(sound.duration)))
+            say("target    %s, %s (%s bytes)" % (limit_label, _mb(limit),
+                                                 format(limit, ",")))
+            result = audio.shrink(sound, limit, args.output, args.overwrite,
+                                  args.attempts)
+    except (FileNotFoundError, FileExistsError, ValueError, Unreadable,
+            image.Unreadable, FfmpegMissing, gif.EncodeFailed,
+            audio.EncodeFailed, TooBig) as error:
+        print("downsize: %s" % error, file=sys.stderr)
+        return NOTHING_WRITTEN
+
+    if isinstance(result, Shrunk):
+        for line in result.attempts:
+            say("attempt   %s" % line)
+        say("wrote     %s  %s   (%s bytes under the limit)\n          %s" % (
+            result.path, _mb(result.size), format(result.headroom, ","),
+            result.summary))
+        report.update(written=result.path, size=result.size,
+                      headroom=result.headroom, summary=result.summary,
+                      attempts=list(result.attempts))
+        code = OK
+    elif isinstance(result, Fits):
+        say("\nalready %s, under the limit. Nothing to do: re-encoding a file "
+            "that fits only loses quality." % _mb(result.size))
+        report.update(already_fits=True, size=result.size)
+        code = OK
+    else:
+        print("\ndownsize: cannot fit this honestly: %s.\nThe smallest it "
+              "could reach is about %s. Nothing was written."
+              % (result.reason, _mb(result.smallest_honest_bytes)),
+              file=sys.stderr)
+        report.update(cannot_fit=True,
+                      smallest_honest_bytes=result.smallest_honest_bytes)
+        code = NOTHING_WRITTEN
+
+    if args.json:
+        print(json.dumps(report, indent=1))
+    return code
 
 
 if __name__ == "__main__":

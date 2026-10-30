@@ -5,24 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "downsize-plus"
 version = "0.1.0"
-description = "downsize+: fits a video under an upload limit, and never hands you a file that is over it"
+description = "downsize+: fits a video, GIF, image or recording under an upload limit, and never hands you a file that is over it"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["video", "compress", "discord", "ffmpeg", "file-size"]
+keywords = ["video", "image", "gif", "audio", "compress", "discord", "ffmpeg", "file-size"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Video :: Conversion",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
 ]
-# No runtime dependencies. The encoding is ffmpeg, which is a program rather
-# than a wheel that can fail to build.
-dependencies = []
+# Pillow for still images. Video, GIFs and audio are ffmpeg, which is a
+# program rather than a wheel that can fail to build.
+dependencies = ["Pillow>=9.1"]
 
 [project.optional-dependencies]
 # Only if ffmpeg is not already installed; this ships a build of it.
 ffmpeg = ["imageio-ffmpeg>=0.4"]
+# iPhone photos.
+heic = ["pillow-heif>=0.10"]
 dev = ["pytest>=7"]
 
 [project.scripts]

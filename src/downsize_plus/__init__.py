@@ -1,10 +1,11 @@
-"""downsize+ -- fit a video under an upload limit, and prove it fits.
+"""downsize+ -- fit a file under an upload limit, and prove it fits.
 
-One promise, kept by measurement rather than by estimate: the file written is
-under the limit. Every encode is weighed afterwards; an overshoot is
-re-encoded lower; a clip that cannot fit is refused with the smallest size it
-could honestly reach, and nothing is written. What the shrinking cost is
-printed as a measured SSIM against the original, not described.
+Video, GIFs, still images and audio, each shrunk its own way, all under one
+promise kept by measurement rather than by estimate: the file written is
+under the limit. Every encode is weighed afterwards; an overshoot is redone
+lower; a file that cannot fit is refused with the smallest size it could
+honestly reach, and nothing is written. For video, what the shrinking cost
+is printed as a measured SSIM against the original, not described.
 """
 from __future__ import annotations
 

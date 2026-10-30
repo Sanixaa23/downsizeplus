@@ -13,19 +13,18 @@ by a rename of a file that has already been measured under the limit, so
 there is no moment at which an oversize file sits where the caller asked
 for the result.
 
-Two other refusals, both about the user's files rather than the arithmetic:
-the input is never the output, and an existing output is never overwritten
-unless the caller says so.
+The placing itself, and the two refusals about the user's files -- the input
+is never the output, an existing output is never overwritten unless asked --
+are in `place.py`, shared with every other kind of file.
 """
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import tempfile
 from typing import Callable, List, NamedTuple, Optional
 
 from .budget import Plan, overhead
+from .place import commit, discard, guard, workspace
 from .probe import Media, ffmpeg
 
 DEFAULT_ATTEMPTS = 4
@@ -67,20 +66,16 @@ class Result(NamedTuple):
         return self.plan.limit_bytes - self.size
 
 
-def _same_file(a: str, b: str) -> bool:
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return os.path.normcase(os.path.abspath(a)) == \
-            os.path.normcase(os.path.abspath(b))
-
-
 def _filters(media: Media, plan: Plan) -> List[str]:
     chain: List[str] = []
     if plan.fps < media.fps:
         chain.append("fps=%g" % plan.fps)
     if (plan.width, plan.height) != (media.width, media.height):
         chain.append("scale=%d:%d:flags=lanczos" % (plan.width, plan.height))
+    if plan.width % 2 or plan.height % 2:
+        # 4:2:0 needs even sides; GIFs and screen captures are often odd.
+        # One pixel off the edge, rather than a refusal.
+        chain.append("crop=trunc(iw/2)*2:trunc(ih/2)*2")
     # Even when nothing is scaled, force 4:2:0. Many players -- Discord's
     # inline one among them -- will not play 4:4:4 or 10-bit H.264.
     chain.append("format=yuv420p")
@@ -117,14 +112,9 @@ def encode(media: Media, plan: Plan, out_path: str,
            attempts: int = DEFAULT_ATTEMPTS, overwrite: bool = False,
            progress: Optional[Callable[[Attempt], None]] = None) -> Result:
     """Encode `media` to `out_path` under `plan.limit_bytes`, or raise."""
-    if _same_file(media.path, out_path):
-        raise ValueError("the output would replace the input; choose "
-                         "another name")
-    if os.path.exists(out_path) and not overwrite:
-        raise FileExistsError("%s already exists; pass overwrite to replace "
-                              "it" % out_path)
+    guard(media.path, out_path, overwrite)
 
-    work = tempfile.mkdtemp(prefix="downsize-")
+    work = workspace()
     candidate = os.path.join(work, "candidate.mp4")
     history: List[Attempt] = []
     video_kbps = plan.video_kbps
@@ -141,11 +131,9 @@ def encode(media: Media, plan: Plan, out_path: str,
                 progress(attempt)
 
             if fits:
-                directory = os.path.dirname(os.path.abspath(out_path))
-                os.makedirs(directory, exist_ok=True)
                 # Measured first, placed second. The rename is the only
                 # write to out_path that ever happens.
-                shutil.move(candidate, out_path)
+                commit(candidate, out_path, plan.limit_bytes)
                 return Result(path=out_path, size=size, plan=plan,
                               attempts=tuple(history))
 
@@ -164,4 +152,4 @@ def encode(media: Media, plan: Plan, out_path: str,
         smallest = min(a.size for a in history)
         raise DidNotFit(smallest, plan.limit_bytes, len(history))
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        discard(work)
