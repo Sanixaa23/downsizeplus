@@ -29,6 +29,9 @@ ffmpeg = ["imageio-ffmpeg>=0.4"]
 heic = ["pillow-heif>=0.10"]
 dev = ["pytest>=7"]
 
+[project.urls]
+Homepage = "https://github.com/Sanixaa23/downsizeplus"
+
 [project.scripts]
 # "+" is not allowed in a Python package or a GitHub repository name, and is
 # awkward to type in some shells, so the command is plain `downsize`.

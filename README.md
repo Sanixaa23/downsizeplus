@@ -5,7 +5,7 @@ Fits a video, GIF, photo or recording under an upload limit — Discord's
 is over it.
 
 ```bash
-pip install "downsize-plus[ffmpeg] @ git+https://github.com/Sanixaa23/downsize-plus"
+pip install "downsize-plus[ffmpeg] @ git+https://github.com/Sanixaa23/downsizeplus"
 downsize clip.mp4
 downsize photo.jpg --size 800KB
 downsize anim.gif --size 200KB
