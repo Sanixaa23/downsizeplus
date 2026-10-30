@@ -1,5 +1,7 @@
 # downsize+
 
+[![tests](https://github.com/Sanixaa23/downsizeplus/actions/workflows/test.yml/badge.svg)](https://github.com/Sanixaa23/downsizeplus/actions/workflows/test.yml)
+
 Fits a video, GIF, photo or recording under an upload limit — Discord's
 10 MB, WhatsApp's 16 MB, any size you name — and never hands you a file that
 is over it.

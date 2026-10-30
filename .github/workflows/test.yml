@@ -1,0 +1,148 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install with the bundled ffmpeg
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ffmpeg]"
+      - name: Tests, and none of them skipped
+        # The end-to-end tests skip themselves without ffmpeg or Pillow. Here
+        # both are installed, so a skip means a test silently stopped
+        # checking anything, and that is a failure.
+        shell: bash
+        run: |
+          python -m pytest tests/ -q -rs | tee result.txt
+          if grep -q skipped result.txt; then
+            echo "a test skipped itself; see the -rs lines above"
+            exit 1
+          fi
+
+  system-ffmpeg:
+    name: the same promise with the system ffmpeg
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg from the distribution
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Install without imageio-ffmpeg
+        # No bundled build, so probe.ffmpeg() has to fall back to PATH, which
+        # is what most real installs do. A distribution build has its own
+        # encoder versions; x264, LAME and Opus all land slightly differently,
+        # and the retry loops have to absorb that.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Which ffmpeg is being measured with
+        run: |
+          which ffmpeg
+          ffmpeg -version | head -1
+          python -c "from downsize_plus.probe import ffmpeg; print('downsize+ uses', ffmpeg())"
+      - name: Tests, and none of them skipped
+        run: |
+          python -m pytest tests/ -q -rs | tee result.txt
+          if grep -q skipped result.txt; then
+            echo "a test skipped itself; see the -rs lines above"
+            exit 1
+          fi
+
+  promise:
+    name: every kind fits, or nothing is written
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: python -m pip install -e .
+
+      - name: Make one input of each kind
+        run: |
+          ffmpeg -v error -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=8" \
+            -f lavfi -i "sine=frequency=330:duration=8" -shortest \
+            -c:v libx264 -crf 14 -preset ultrafast -pix_fmt yuv420p -c:a aac clip.mp4
+          ffmpeg -v error -f lavfi -i "testsrc2=size=481x271:rate=20:duration=6" \
+            -vf "split[a][b];[a]palettegen[p];[b][p]paletteuse" anim.gif
+          ffmpeg -v error -f lavfi -i "anoisesrc=d=60:c=pink:a=0.3" -ar 44100 talk.wav
+          python -c "from PIL import Image; Image.effect_noise((3000, 2000), 50).convert('RGB').save('photo.jpg', quality=97)"
+          ls -l clip.mp4 anim.gif talk.wav photo.jpg
+
+      - name: Each one fits, measured on disk here rather than by the tool
+        # The program prints its own size. This step does not believe it:
+        # it reads the file's length itself and compares with the limit.
+        run: |
+          check() {
+            input=$1 limit=$2 out=$3
+            downsize "$input" --size "${limit}B" -o "$out" --no-quality && code=0 || code=$?
+            size=$(stat -c %s "$out")
+            echo "$input -> $out: exit $code, $size bytes, limit $limit"
+            test $code -eq 0
+            test "$size" -le "$limit"
+          }
+          check clip.mp4  400000 clip.small.mp4
+          check anim.gif  150000 anim.small.gif
+          check anim.gif  100000 anim.small.mp4
+          check photo.jpg 300000 photo.small.jpg
+          check photo.jpg 300000 photo.small.webp
+          check talk.wav  300000 talk.small.mp3
+          check talk.wav  200000 talk.small.m4a
+          check talk.wav  100000 talk.small.opus
+          file anim.small.gif photo.small.jpg photo.small.webp talk.small.mp3
+
+      - name: An impossible limit exits 2 and writes nothing
+        # The reason this job exists. "Slightly too big" is not an outcome
+        # this program has; the only alternative to fitting is no file.
+        run: |
+          refuse() {
+            input=$1 limit=$2 out=$3
+            set +e
+            downsize "$input" --size "${limit}B" -o "$out" --no-quality
+            code=$?
+            set -e
+            echo "$input at $limit bytes: exit $code"
+            test $code -eq 2
+            test ! -e "$out"
+          }
+          refuse clip.mp4  5000 never.mp4
+          refuse anim.gif  2000 never.gif
+          refuse photo.jpg 1500 never.jpg
+          refuse talk.wav  20000 never.mp3
+
+      - name: A file that already fits exits 0 and is left alone
+        run: |
+          downsize photo.jpg --size 500MB -o unneeded.jpg
+          test ! -e unneeded.jpg
+
+      - name: Something that is not media exits 2
+        run: |
+          printf 'not a video\n' > junk.bin
+          set +e
+          downsize junk.bin; junk=$?
+          downsize no-such-file.mp4; missing=$?
+          set -e
+          echo "junk: $junk, missing: $missing"
+          test $junk -eq 2
+          test $missing -eq 2
